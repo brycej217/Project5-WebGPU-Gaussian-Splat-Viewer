@@ -26,7 +26,8 @@ export default function get_renderer(
   camera_buffer: GPUBuffer,
   vertexBuffer: GPUBuffer,
   indexBuffer: GPUBuffer,
-  drawBuffer: GPUBuffer
+  drawBuffer: GPUBuffer,
+  splatBuffer: GPUBuffer
 ): GaussianRenderer {
   const sorter = get_sorter(pc.num_points, device)
 
@@ -41,25 +42,33 @@ export default function get_renderer(
   vertexBuffer = createBuffer(
     device,
     'vertex buffer',
-    n * 4 * 4 * 3, // n point clouds * 4 vertices * 4 bytes per float * 3 floats per vec3
+    4 * 4 * 4, // 1 quad (instanced) * 4 vertices * 4 bytes per float * 4 floats per vec4
     GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX
   )
 
   indexBuffer = createBuffer(
     device,
     'index buffer',
-    n * 6 * 4, // n point clouds * 6 indices * 4 bytes per index
+    6 * 4, // 1 point cloud (instanced) * 6 indices * 4 bytes per index
     GPUBufferUsage.STORAGE | GPUBufferUsage.INDEX
   )
 
   drawBuffer = createBuffer(
     device,
     'draw buffer',
-    n * 5 * 4, // n point clouds * 5 ints per indexed indirect draw call * 4 bytes per int
-    GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT
+    5 * 4, // 1 draw command (instanced) * 5 ints per indexed indirect draw call * 4 bytes per int
+    GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST
   )
 
-  const nulling_data = new Uint32Array([0])
+  const splatSize = n * 4 * 4; // n point clouds * 4 bytes per float * 4 floats per vec4<f32>
+  splatBuffer = createBuffer(
+    device,
+    'splat buffer',
+    splatSize,
+    GPUBufferUsage.STORAGE
+  )
+    
+  const nulling_data = new Uint32Array([0, 0, 0, 0, 0])
 
   // ===============================================
   //    Create Compute Pipeline and Bind Groups
@@ -78,11 +87,11 @@ export default function get_renderer(
     },
   })
 
-  const splatBindGroup = device.createBindGroup({
-    label: 'splat bind group',
+  const drawBindGroup = device.createBindGroup({
+    label: 'draw bind group',
     layout: preprocess_pipeline.getBindGroupLayout(0),
     entries: [
-      //{ binding: 0, resource: { buffer: camera_buffer } },
+      { binding: 0, resource: { buffer: camera_buffer } },
       { binding: 1, resource: { buffer: drawBuffer } },
       { binding: 2, resource: { buffer: vertexBuffer } },
       { binding: 3, resource: { buffer: indexBuffer } },
@@ -93,7 +102,8 @@ export default function get_renderer(
     label: 'gaussians',
     layout: preprocess_pipeline.getBindGroupLayout(1),
     entries: [
-      //{ binding: 0, resource: { buffer: pc.gaussian_3d_buffer } }
+      { binding: 0, resource: { buffer: pc.gaussian_3d_buffer } },
+      { binding: 1, resource: { buffer: splatBuffer } },
     ],
   })
 
@@ -131,8 +141,8 @@ export default function get_renderer(
       entryPoint: 'vs_main',
       buffers: [
         {
-          arrayStride: 4 * 4, // vec3
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
+          arrayStride: 4 * 4, // vec4
+          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }],
         },
       ],
     },
@@ -146,6 +156,15 @@ export default function get_renderer(
     },
   })
 
+    const renderBindGroup = device.createBindGroup({
+    label: 'render bind group',
+    layout: render_pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: splatBuffer } },
+    ]
+  })
+
+
   // ===============================================
   //    Command Encoder Functions
   // ===============================================
@@ -153,12 +172,13 @@ export default function get_renderer(
   const render = (encoder: GPUCommandEncoder, texture_view: GPUTextureView) => {
     const computePass = encoder.beginComputePass()
     computePass.setPipeline(preprocess_pipeline)
-    computePass.setBindGroup(0, splatBindGroup)
-    //computePass.setBindGroup(1, gaussianBindGroup)
+    computePass.setBindGroup(0, drawBindGroup)
+    computePass.setBindGroup(1, gaussianBindGroup)
     //computePass.setBindGroup(2, sort_bind_group)
 
     const groups = Math.ceil(n / C.histogram_wg_size)
 
+    device.queue.writeBuffer(drawBuffer, 0, nulling_data); // reset instance counts
     computePass.dispatchWorkgroups(groups)
 
     computePass.end()
@@ -175,14 +195,11 @@ export default function get_renderer(
     })
 
     pass.setPipeline(render_pipeline)
-    pass.setVertexBuffer(0, vertexBuffer);
-    pass.setIndexBuffer(indexBuffer, 'uint32');
+    pass.setVertexBuffer(0, vertexBuffer)
+    pass.setIndexBuffer(indexBuffer, 'uint32')
+    pass.setBindGroup(0, renderBindGroup);
 
-    const stride = 5 * 4;
-    for (let i = 0; i < n; i++)
-    {
-      pass.drawIndexedIndirect(drawBuffer, stride * i);
-    }
+    pass.drawIndexedIndirect(drawBuffer, 0)
 
     pass.end()
   }

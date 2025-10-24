@@ -1,3 +1,8 @@
+struct VertexInput
+{
+    @location(0) pos: vec4<f32>,
+}
+
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     //TODO: information passed from vertex shader to fragment shader
@@ -5,19 +10,22 @@ struct VertexOutput {
 
 struct Splat {
     //TODO: information defined in preprocess compute shader
-    val: u32
+    pos: vec4<f32>
 };
 
-struct VertexInput
-{
-    @location(0) pos: vec3f,
-}
+@group(0) @binding(0)
+var<storage, read> splats : array<Splat>;
 
 @vertex
-fn vs_main(in: VertexInput) -> VertexOutput 
+fn vs_main(in: VertexInput, @builtin(instance_index) idx : u32) -> VertexOutput 
 {
     var out: VertexOutput;
-    out.position = vec4<f32>(in.pos.xyz, 1.);
+
+    let splat = splats[idx];
+    let center = splat.pos;
+
+    out.position = center + in.pos;
+
     return out;
 }
 

@@ -5,14 +5,19 @@ struct VertexOutput {
 
 struct Splat {
     //TODO: information defined in preprocess compute shader
+    val: u32
 };
 
+struct VertexInput
+{
+    @location(0) pos: vec3f,
+}
+
 @vertex
-fn vs_main(
-) -> VertexOutput {
-    //TODO: reconstruct 2D quad based on information from splat, pass 
+fn vs_main(in: VertexInput) -> VertexOutput 
+{
     var out: VertexOutput;
-    out.position = vec4<f32>(1. ,1. , 0., 1.);
+    out.position = vec4<f32>(in.pos.xyz, 1.);
     return out;
 }
 

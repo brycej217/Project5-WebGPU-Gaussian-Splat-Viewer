@@ -57,7 +57,26 @@ struct Gaussian {
 
 struct Splat {
     //TODO: store information for 2D splat rendering
+    val: u32
 };
+
+struct Draw
+{
+    indexCount : u32,
+    instanceCount: u32,
+    firstIndex: u32,
+    baseVertex: i32,
+    firstInstance: u32
+};
+
+// splat bind group
+@group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(0) @binding(1) var<storage, read_write> drawBuffer: array<Draw>;
+@group(0) @binding(2) var<storage, read_write> vertexBuffer: array<vec3<f32>>;
+@group(0) @binding(3) var<storage, read_write> indexBuffer: array<u32>;
+
+@group(1) @binding(0)
+var<storage,read> gaussians : array<Gaussian>;
 
 //TODO: bind your data here
 @group(2) @binding(0)
@@ -108,10 +127,36 @@ fn computeColorFromSH(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     return  max(vec3<f32>(0.), result);
 }
 
+fn populateDraw(idx: u32)
+{
+    let vOffset = idx * 4u;
+    let iOffset = idx * 6u;
+
+    vertexBuffer[vOffset + 0u] = vec3<f32>(-0.1, -0.1, 0.0);
+    vertexBuffer[vOffset + 1u] = vec3<f32>( 0.1, -0.1, 0.0);
+    vertexBuffer[vOffset + 2u] = vec3<f32>( 0.1,  0.1, 0.0);
+    vertexBuffer[vOffset + 3u] = vec3<f32>(-0.1,  0.1, 0.0);
+
+    indexBuffer[iOffset + 0u] = vOffset + 0u;
+    indexBuffer[iOffset + 1u] = vOffset + 1u;
+    indexBuffer[iOffset + 2u] = vOffset + 2u;
+    indexBuffer[iOffset + 3u] = vOffset + 2u;
+    indexBuffer[iOffset + 4u] = vOffset + 3u;
+    indexBuffer[iOffset + 5u] = vOffset + 0u;
+
+    drawBuffer[idx].indexCount = 6u;
+    drawBuffer[idx].instanceCount = 1u;
+    drawBuffer[idx].firstIndex = iOffset;
+    drawBuffer[idx].baseVertex = i32(vOffset);
+    drawBuffer[idx].firstInstance = idx;
+}
+
 @compute @workgroup_size(workgroupSize,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
     //TODO: set up pipeline as described in instruction
+
+    populateDraw(idx);
 
     let keys_per_dispatch = workgroupSize * sortKeyPerThread; 
     // increment DispatchIndirect.dispatchx each time you reach limit for one dispatch of keys

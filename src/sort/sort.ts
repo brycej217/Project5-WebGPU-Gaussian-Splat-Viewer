@@ -271,7 +271,7 @@ export function get_sorter(keysize: number, device: GPUDevice): SortStuff {
   const sort_dispatch_indirect_buffer = device.createBuffer({
     label: 'sort dispatch indirect',
     size: 3 * 4,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.INDIRECT,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_SRC,
   });
 
   const pipelines = create_pipelines(device);

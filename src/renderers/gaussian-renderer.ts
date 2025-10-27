@@ -24,10 +24,10 @@ export default function get_renderer(
   device: GPUDevice,
   presentation_format: GPUTextureFormat,
   camera_buffer: GPUBuffer,
-  vertexBuffer: GPUBuffer,
-  indexBuffer: GPUBuffer,
   drawBuffer: GPUBuffer,
-  splatBuffer: GPUBuffer
+  splatBuffer: GPUBuffer,
+  settingsBuffer: GPUBuffer,
+  nullingBuffer: GPUBuffer
 ): GaussianRenderer {
   const sorter = get_sorter(pc.num_points, device)
 
@@ -39,36 +39,38 @@ export default function get_renderer(
   // we will fill this in in the compute shader
   const n = pc.num_points
 
-  vertexBuffer = createBuffer(
-    device,
-    'vertex buffer',
-    4 * 4 * 4, // 1 quad (instanced) * 4 vertices * 4 bytes per float * 4 floats per vec4
-    GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX
-  )
-
-  indexBuffer = createBuffer(
-    device,
-    'index buffer',
-    6 * 4, // 1 point cloud (instanced) * 6 indices * 4 bytes per index
-    GPUBufferUsage.STORAGE | GPUBufferUsage.INDEX
-  )
-
   drawBuffer = createBuffer(
     device,
     'draw buffer',
-    5 * 4, // 1 draw command (instanced) * 5 ints per indexed indirect draw call * 4 bytes per int
-    GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST
+    4 * 4, // 1 draw command (instanced) * 4 ints per indexed indirect draw call * 4 bytes per int
+    GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
+    new Uint32Array([4, 0, 0, 0])
   )
 
-  const splatSize = n * 4 * 4; // n point clouds * 4 bytes per float * 4 floats per vec4<f32>
+  const splatSize = n * 6 * 4 // n point clouds * 6 packed floats * 4 bytes per packed float
   splatBuffer = createBuffer(
     device,
     'splat buffer',
     splatSize,
     GPUBufferUsage.STORAGE
   )
-    
-  const nulling_data = new Uint32Array([0, 0, 0, 0, 0])
+
+  settingsBuffer = createBuffer(
+    device,
+    'settings buffer',
+    4 * 4, // 2 floats + padding
+    GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    new Float32Array([1, pc.sh_deg, 0, 0])
+  )
+
+  const nulling_data = new Uint32Array([0, 1, 1])
+  nullingBuffer = createBuffer(
+    device,
+    'nulling buffer',
+    12,
+    GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    nulling_data
+  )
 
   // ===============================================
   //    Create Compute Pipeline and Bind Groups
@@ -92,9 +94,7 @@ export default function get_renderer(
     layout: preprocess_pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: camera_buffer } },
-      { binding: 1, resource: { buffer: drawBuffer } },
-      { binding: 2, resource: { buffer: vertexBuffer } },
-      { binding: 3, resource: { buffer: indexBuffer } },
+      { binding: 1, resource: { buffer: settingsBuffer } },
     ],
   })
 
@@ -104,6 +104,7 @@ export default function get_renderer(
     entries: [
       { binding: 0, resource: { buffer: pc.gaussian_3d_buffer } },
       { binding: 1, resource: { buffer: splatBuffer } },
+      { binding: 2, resource: { buffer: pc.sh_buffer } },
     ],
   })
 
@@ -111,7 +112,6 @@ export default function get_renderer(
     label: 'sort',
     layout: preprocess_pipeline.getBindGroupLayout(2),
     entries: [
-      /*
       { binding: 0, resource: { buffer: sorter.sort_info_buffer } },
       {
         binding: 1,
@@ -124,7 +124,7 @@ export default function get_renderer(
       {
         binding: 3,
         resource: { buffer: sorter.sort_dispatch_indirect_buffer },
-      },*/
+      },
     ],
   })
 
@@ -139,50 +139,72 @@ export default function get_renderer(
     vertex: {
       module: render_shader,
       entryPoint: 'vs_main',
-      buffers: [
-        {
-          arrayStride: 4 * 4, // vec4
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }],
-        },
-      ],
     },
     fragment: {
       module: render_shader,
       entryPoint: 'fs_main',
-      targets: [{ format: presentation_format }],
+      targets: [
+        {
+          format: presentation_format,
+          blend: {
+            color: {
+              srcFactor: 'one',
+              dstFactor: 'one-minus-src-alpha',
+              operation: 'add',
+            },
+            alpha: {
+              srcFactor: 'one',
+              dstFactor: 'one-minus-src-alpha',
+              operation: 'add',
+            },
+          },
+        },
+      ],
     },
     primitive: {
-      topology: 'triangle-list',
+      topology: 'triangle-strip',
     },
   })
 
-    const renderBindGroup = device.createBindGroup({
+  const renderBindGroup = device.createBindGroup({
     label: 'render bind group',
     layout: render_pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: splatBuffer } },
-    ]
+      {
+        binding: 1,
+        resource: { buffer: sorter.ping_pong[0].sort_indices_buffer },
+      },
+      { binding: 2, resource: { buffer: camera_buffer } },
+    ],
   })
-
 
   // ===============================================
   //    Command Encoder Functions
   // ===============================================
 
-  const render = (encoder: GPUCommandEncoder, texture_view: GPUTextureView) => {
+  const preprocess = (encoder: GPUCommandEncoder) => {
+    // get settings
+    device.queue.writeBuffer(
+      settingsBuffer,
+      0,
+      new Float32Array([1, pc.sh_deg, 0, 0])
+    )
+
     const computePass = encoder.beginComputePass()
     computePass.setPipeline(preprocess_pipeline)
     computePass.setBindGroup(0, drawBindGroup)
     computePass.setBindGroup(1, gaussianBindGroup)
-    //computePass.setBindGroup(2, sort_bind_group)
+    computePass.setBindGroup(2, sort_bind_group)
 
     const groups = Math.ceil(n / C.histogram_wg_size)
 
-    device.queue.writeBuffer(drawBuffer, 0, nulling_data); // reset instance counts
     computePass.dispatchWorkgroups(groups)
 
     computePass.end()
+  }
 
+  const render = (encoder: GPUCommandEncoder, texture_view: GPUTextureView) => {
     const pass = encoder.beginRenderPass({
       label: 'gaussian render',
       colorAttachments: [
@@ -195,11 +217,9 @@ export default function get_renderer(
     })
 
     pass.setPipeline(render_pipeline)
-    pass.setVertexBuffer(0, vertexBuffer)
-    pass.setIndexBuffer(indexBuffer, 'uint32')
-    pass.setBindGroup(0, renderBindGroup);
+    pass.setBindGroup(0, renderBindGroup)
 
-    pass.drawIndexedIndirect(drawBuffer, 0)
+    pass.drawIndirect(drawBuffer, 0)
 
     pass.end()
   }
@@ -210,6 +230,15 @@ export default function get_renderer(
 
   return {
     frame: (encoder: GPUCommandEncoder, texture_view: GPUTextureView) => {
+      encoder.clearBuffer(sorter.sort_info_buffer, 0, 4)
+      encoder.clearBuffer(sorter.sort_dispatch_indirect_buffer, 0, 4)
+
+      preprocess(encoder)
+
+      //sorter.sort(encoder)
+
+      encoder.copyBufferToBuffer(sorter.sort_info_buffer, 0, drawBuffer, 4, 4) // extract instance count from sort buffer
+
       render(encoder, texture_view)
     },
 

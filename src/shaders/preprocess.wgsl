@@ -47,6 +47,8 @@ struct CameraUniforms {
 struct RenderSettings {
     gaussian_scaling: f32,
     sh_deg: f32,
+    pad_0: f32,
+    pad_1: f32
 }
 
 struct Gaussian {
@@ -56,29 +58,23 @@ struct Gaussian {
 };
 
 struct Splat {
-    //TODO: store information for 2D splat rendering
-    pos: vec4<f32>
-};
-
-struct Draw
-{
-    indexCount : u32,
-    instanceCount: atomic<u32>,
-    firstIndex: u32,
-    baseVertex: i32,
-    firstInstance: u32
+    pos: u32,
+    size: u32,
+    col_op: vec2u,
+    conic: vec2u
 };
 
 // splat bind group
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
-@group(0) @binding(1) var<storage, read_write> drawBuffer: array<Draw>;
-@group(0) @binding(2) var<storage, read_write> vertexBuffer: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> indexBuffer: array<u32>;
+@group(0) @binding(1) var<uniform> settings: RenderSettings;
 
 @group(1) @binding(0)
 var<storage,read> gaussians : array<Gaussian>;
 @group(1) @binding(1)
 var<storage, read_write> splats : array<Splat>;
+@group(1) @binding(2)
+var<storage, read> sh_buff: array<u32>;
+
 
 //TODO: bind your data here
 @group(2) @binding(0)
@@ -91,9 +87,18 @@ var<storage, read_write> sort_indices : array<u32>;
 var<storage, read_write> sort_dispatch: DispatchIndirect;
 
 /// reads the ith sh coef from the storage buffer 
-fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> {
-    //TODO: access your binded sh_coeff, see load.ts for how it is stored
-    return vec3<f32>(0.0);
+fn sh_coef(splat_idx: u32, c_idx: u32) -> vec3<f32> 
+{
+    let index = splat_idx * 24 + (c_idx / 2) * 3 + c_idx % 2;
+    let color01 = unpack2x16float(sh_buff[index + 0]);
+    let color23 = unpack2x16float(sh_buff[index + 1]);
+
+    if (c_idx % 2 == 0) 
+    {
+        return vec3f(color01.x, color01.y, color23.x);
+    }
+
+    return vec3f(color01.y, color23.x, color23.y);
 }
 
 // spherical harmonics evaluation with Condon–Shortley phase
@@ -129,54 +134,119 @@ fn computeColorFromSH(dir: vec3<f32>, v_idx: u32, sh_deg: u32) -> vec3<f32> {
     return  max(vec3<f32>(0.), result);
 }
 
-fn setIndices()
-{
-    indexBuffer[0u] = 0u;
-    indexBuffer[1u] = 1u;
-    indexBuffer[2u] = 2u;
-    indexBuffer[3u] = 2u;
-    indexBuffer[4u] = 3u;
-    indexBuffer[5u] = 0u;
-}
-
-fn setDrawCall()
-{
-    drawBuffer[0u].indexCount = 6u;
-    drawBuffer[0u].firstIndex = 0u;
-    drawBuffer[0u].baseVertex = i32(0u);
-    drawBuffer[0u].firstInstance = 0u;
-
-    _ = atomicAdd(&drawBuffer[0u].instanceCount, 1u);
-}
-
-fn populateDraw(idx: u32, gaussian: Gaussian)
-{
-    let a = unpack2x16float(gaussian.pos_opacity[0]);
-    let b = unpack2x16float(gaussian.pos_opacity[1]);
-    let center_world = camera.proj * camera.view * vec4<f32>(a.x, a.y, b.x, 1.0f);
-    let center = center_world.xyzw / center_world.w;
-
-    splats[idx].pos = center;
-
-    // set default quad
-    let s = 0.001;
-
-    vertexBuffer[0u] = vec4(-s, -s, 1., 1.);
-    vertexBuffer[1u] = vec4(s, -s, 1., 1.);
-    vertexBuffer[2u] = vec4(s, s, 1., 1.);
-    vertexBuffer[3u] = vec4(-s, s, 1., 1.);
-
-    setIndices();
-    setDrawCall();
-}
-
 @compute @workgroup_size(workgroupSize,1,1)
 fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) wgs: vec3<u32>) {
     let idx = gid.x;
 
-    let gaussian = gaussians[idx];
-    populateDraw(idx, gaussian);
+    if (idx >= arrayLength(&gaussians))
+    {
+        return;
+    }
 
+    let gaussian = gaussians[idx];
+
+    let a = unpack2x16float(gaussian.pos_opacity[0]);
+    let b = unpack2x16float(gaussian.pos_opacity[1]);
+    let pos = vec3f(a.xy, b.x);
+    let view = camera.view * vec4<f32>(pos.xyz, 1.0f);
+    let clip = camera.proj * view;
+    let center = clip.xyzw / clip.w;
+
+    let aabbLim = 2.2f;
+    if (abs(center.x) > aabbLim || abs(center.y) > aabbLim)
+    {
+        return;
+    }
+
+    // 3D covariance
+    let rot = vec4<f32>(unpack2x16float(gaussian.rot[0]), unpack2x16float(gaussian.rot[1]));
+    let scale = exp(vec3f(unpack2x16float(gaussian.scale[0]), unpack2x16float(gaussian.scale[1]).x)) * settings.gaussian_scaling;
+
+    let R = mat3x3f(
+        1.0 - 2.0 * (rot.z * rot.z + rot.w * rot.w), 2.0 * (rot.y * rot.z + rot.x * rot.w), 2.0 * (rot.y * rot.w - rot.x * rot.z),
+        2.0 * (rot.y * rot.z - rot.x * rot.w), 1.0 - 2.0 * (rot.y * rot.y + rot.w * rot.w), 2.0 * (rot.z * rot.w + rot.x * rot.y),
+        2.0 * (rot.y * rot.w + rot.x * rot.z), 2.0 * (rot.z * rot.w - rot.x * rot.y), 1.0 - 2.0 * (rot.y * rot.y + rot.z * rot.z)
+    );
+
+    let S = mat3x3f(
+        scale.x, 0.0f, 0.0f,
+        0.0f, scale.y, 0.0f,
+        0.0f, 0.0f, scale.z
+    );
+
+    let cov3D = R * S * transpose(S) * transpose(R);
+
+    // 2D covariance
+    let W = mat3x3f(
+        vec3f(camera.view[0][0], camera.view[1][0], camera.view[2][0]),
+        vec3f(camera.view[0][1], camera.view[1][1], camera.view[2][1]),
+        vec3f(camera.view[0][2], camera.view[1][2], camera.view[2][2])
+    );
+
+    let invZ = 1.0 / view.z;
+    let J = mat2x3f(
+        camera.focal.x * invZ, 0.0, -camera.focal.x * view.x * invZ * invZ,
+        0.0, camera.focal.y * invZ, -camera.focal.y * view.y * invZ * invZ
+    );
+
+    let M = W * cov3D * transpose(W); 
+    var cov2D = (transpose(J) * M) * J;
+
+    // numerical stability
+    cov2D[0][0] += 0.3f;
+    cov2D[1][1] += 0.3f;
+
+    // compute splat paramss
+    let det = determinant(cov2D);
+    if (det == 0)
+    {
+        return;
+    }
+
+    let mid = 0.5 * (cov2D[0][0] + cov2D[1][1]);
+	let lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
+	let lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
+
+    let r = ceil(3.0 * sqrt(max(lambda1, lambda2)));
+    let radius = vec2f(r) / camera.viewport;
+
+    // compute color
+    let camPos = -camera.view[3].xyz;
+    let direction = normalize(pos - camPos);
+
+    let color = computeColorFromSH(
+        direction, idx, u32(settings.sh_deg)
+    );
+    let opacity = 1.0f / (1.0f + exp(-b.y)); // sigmoid
+
+    let sortIdx = atomicAdd(&sort_infos.keys_size, 1);
+    sort_depths[sortIdx] = bitcast<u32>(100.0f - view.z);
+    sort_indices[sortIdx] = sortIdx; // populate with index for radix
+
+    let debug = sort_dispatch.dispatch_y;
+    splats[sortIdx].pos = pack2x16float(center.xy);
+    splats[sortIdx].size = pack2x16float(radius);
+    splats[sortIdx].col_op = vec2u(
+        pack2x16float(color.rg),
+        pack2x16float(vec2f(color.b, opacity))
+    );
+
+    let det_inv = 1.0 / det;
+    let conic = vec3f(
+        cov2D[1][1] * det_inv,
+        -cov2D[0][1] * det_inv,
+        cov2D[0][0] * det_inv
+    );
+    splats[sortIdx].conic = vec2u(
+        pack2x16float(conic.xy),
+        pack2x16float(vec2f(conic.z, opacity))
+    );
+
+    // sort dispatch
     let keys_per_dispatch = workgroupSize * sortKeyPerThread; 
-    // increment DispatchIndirect.dispatchx each time you reach limit for one dispatch of keys
+
+    if (sortIdx % keys_per_dispatch == 0) 
+    {
+        atomicAdd(&sort_dispatch.dispatch_x, 1u); // add representative thread for dispatch group
+    }
 }

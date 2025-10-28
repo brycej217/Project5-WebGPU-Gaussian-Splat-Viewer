@@ -4,7 +4,9 @@ import renderWGSL from '../shaders/gaussian.wgsl'
 import { get_sorter, c_histogram_block_rows, C } from '../sort/sort'
 import { Renderer } from './renderer'
 
-export interface GaussianRenderer extends Renderer {}
+export interface GaussianRenderer extends Renderer {
+  settingsBuffer: GPUBuffer
+}
 
 // Utility to create GPU buffers
 const createBuffer = (
@@ -184,13 +186,6 @@ export default function get_renderer(
   // ===============================================
 
   const preprocess = (encoder: GPUCommandEncoder) => {
-    // get settings
-    device.queue.writeBuffer(
-      settingsBuffer,
-      0,
-      new Float32Array([1, pc.sh_deg, 0, 0])
-    )
-
     const computePass = encoder.beginComputePass()
     computePass.setPipeline(preprocess_pipeline)
     computePass.setBindGroup(0, drawBindGroup)
@@ -230,12 +225,34 @@ export default function get_renderer(
 
   return {
     frame: (encoder: GPUCommandEncoder, texture_view: GPUTextureView) => {
-      encoder.clearBuffer(sorter.sort_info_buffer, 0, 4)
-      encoder.clearBuffer(sorter.sort_dispatch_indirect_buffer, 0, 4)
+      encoder.copyBufferToBuffer(
+        nullingBuffer,
+        0,
+        sorter.sort_info_buffer,
+        0,
+        4
+      )
+      encoder.copyBufferToBuffer(
+        nullingBuffer,
+        0,
+        sorter.sort_dispatch_indirect_buffer,
+        0,
+        12
+      )
 
       preprocess(encoder)
 
-      //sorter.sort(encoder)
+      /*
+        const test = createBuffer(
+        device,
+        'test buffer',
+        3 * 4, // 2 floats + padding
+        GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+        new Float32Array([n, 1, 1])
+      )
+      encoder.copyBufferToBuffer(test, 0, sorter.sort_dispatch_indirect_buffer, 0, 12);*/
+      
+      sorter.sort(encoder)
 
       encoder.copyBufferToBuffer(sorter.sort_info_buffer, 0, drawBuffer, 4, 4) // extract instance count from sort buffer
 
@@ -243,5 +260,6 @@ export default function get_renderer(
     },
 
     camera_buffer,
+    settingsBuffer,
   }
 }

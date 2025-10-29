@@ -1,5 +1,5 @@
-import { vec3, mat3, mat4, quat } from 'wgpu-matrix';
-import { Camera } from './camera';
+import { vec3, mat3, mat4, quat } from "wgpu-matrix";
+import { Camera } from "./camera";
 
 export class CameraControl {
   element: HTMLCanvasElement;
@@ -9,18 +9,26 @@ export class CameraControl {
 
   register_element(value: HTMLCanvasElement) {
     if (this.element && this.element != value) {
-      this.element.removeEventListener('pointerdown', this.downCallback.bind(this));
-      this.element.removeEventListener('pointermove', this.moveCallback.bind(this));
-      this.element.removeEventListener('pointerup', this.upCallback.bind(this));
-      this.element.removeEventListener('wheel', this.wheelCallback.bind(this));
+      this.element.removeEventListener(
+        "pointerdown",
+        this.downCallback.bind(this)
+      );
+      this.element.removeEventListener(
+        "pointermove",
+        this.moveCallback.bind(this)
+      );
+      this.element.removeEventListener("pointerup", this.upCallback.bind(this));
+      this.element.removeEventListener("wheel", this.wheelCallback.bind(this));
     }
 
     this.element = value;
-    this.element.addEventListener('pointerdown', this.downCallback.bind(this));
-    this.element.addEventListener('pointermove', this.moveCallback.bind(this));
-    this.element.addEventListener('pointerup', this.upCallback.bind(this));
-    this.element.addEventListener('wheel', this.wheelCallback.bind(this));
-    this.element.addEventListener('contextmenu', (e) => { e.preventDefault(); });
+    this.element.addEventListener("pointerdown", this.downCallback.bind(this));
+    this.element.addEventListener("pointermove", this.moveCallback.bind(this));
+    this.element.addEventListener("pointerup", this.upCallback.bind(this));
+    this.element.addEventListener("wheel", this.wheelCallback.bind(this));
+    this.element.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+    });
   }
 
   private panning = false;
@@ -75,7 +83,9 @@ export class CameraControl {
     // const r = mat4.identity();
     // mat4.rotateY(r, -xDelta, r);
     // mat4.rotateX(r, yDelta, r);
-    const r = mat4.fromQuat(quat.fromEuler(yDelta * 0.01, -xDelta * 0.01, 0, 'xyz'));
+    const r = mat4.fromQuat(
+      quat.fromEuler(yDelta * 0.01, -xDelta * 0.01, 0, "xyz")
+    );
 
     mat4.mul(r, this.camera.rotation, this.camera.rotation);
 
@@ -91,4 +101,4 @@ export class CameraControl {
     vec3.add(d, this.camera.position, this.camera.position);
     this.camera.update_buffer();
   }
-};
+}

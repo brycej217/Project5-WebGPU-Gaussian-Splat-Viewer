@@ -44,7 +44,7 @@ fn vs_main(@builtin(instance_index) iIdx : u32, @builtin(vertex_index) vIdx: u32
     );
 
     var out: VertexOutput;
-    out.position = vec4f(center + size * vertices[vIdx], 0.0, 1.0);
+    out.position = vec4f(center + (size * vertices[vIdx]), 0.0, 1.0);
     out.col_op = splat.col_op;
     out.conic = conic;
     out.pixelCenter = (center.xy * vec2f(0.5, -0.5) + vec2f(0.5, 0.5)) * camera.viewport;

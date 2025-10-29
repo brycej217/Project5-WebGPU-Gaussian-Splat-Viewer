@@ -183,10 +183,9 @@ fn preprocess(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgr
         vec3f(camera.view[0][2], camera.view[1][2], camera.view[2][2])
     );
 
-    let invZ = 1.0 / view.z;
     let J = mat2x3f(
-        camera.focal.x * invZ, 0.0, -camera.focal.x * view.x * invZ * invZ,
-        0.0, camera.focal.y * invZ, -camera.focal.y * view.y * invZ * invZ
+        camera.focal.x / view.z, 0.0, -camera.focal.x * view.x / (view.z * view.z),
+        0.0, camera.focal.y / view.z, -camera.focal.y * view.y / (view.z * view.z)
     );
 
     let M = W * cov3D * transpose(W); 
